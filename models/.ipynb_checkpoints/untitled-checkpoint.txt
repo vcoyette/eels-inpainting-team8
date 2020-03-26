@@ -1,0 +1,19 @@
+Loss: master_metric(each, all, 'product', mse
+NET_TYPE: ResNet, Skip2-4-6, (Unet)
+grad_clippinig: true or false
+pca_th: 5, 10, 15
+
+max_iter 2500
+
+Skip:
+    num_channels_down : array 3, puissance de 2 [888][16,16,16][64,32,16]
+    filter_size_*: 3,5,7
+    
+ResNet:
+    num_blocks: 4<= . <=64
+    num_channels: 32 <= . <= 256
+    
+Output:
+    params
+    3 metrics
+    loss

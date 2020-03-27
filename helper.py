@@ -21,7 +21,7 @@ import time
 
 import scipy.io as sio
 
-def results(out_np, time_elapsed, PCA, is_test=True):
+def results(out_np, time_elapsed, PCA, is_test=True, orig_img=None):
     print('Seconds elapsed : %d ' % (time_elapsed))
 
     restored = inverse_pca(out_np,PCA)
@@ -34,9 +34,8 @@ def results(out_np, time_elapsed, PCA, is_test=True):
     np.save('Restored_original_base_summed.npy', restored_summed)
 
     if not is_test:
-        orig_summed = sum(dmread(path_list[0]))
-        orig_summed = scale_image(orig_summed)
-        print_metrics(torch.tensor(orig_summed).unsqueeze(0).unsqueeze(0).float(),torch.tensor(restored_summed).unsqueeze(0).unsqueeze(0).float())
+        orig_summed = sum(orig_img)
+        #print_metrics(torch.tensor(orig_summed).unsqueeze(0).unsqueeze(0).float(),torch.tensor(restored_summed).unsqueeze(0).unsqueeze(0).float())
         return restored_summed , orig_summed
 
     else:
@@ -311,7 +310,7 @@ def percentage_variance(img, mask):
 
 ###############################################################################
 
-def inverse_pca(img, PCA):
+def inverse_pca(img, PCA, mfi=None, mmfi=None):
     
     '''
     This function can do the reverse PCA of an image in order to restore all the spectrum.
@@ -329,13 +328,14 @@ def inverse_pca(img, PCA):
         
     if np.shape(img)[0]!=PCA.PCA_th:
         raise ValueError("Spectral dimension does not match with the PCA.")
-             
-    recovered_img = np.transpose(PCA.inverse(np.transpose(img, (1, 2, 0))), (2, 0, 1))
     
-    mfi = np.max(recovered_img)
-    mmfi = np.min(recovered_img)
-    recovered_img = 1/(mfi-mmfi)*(recovered_img-mmfi)
-    
+    iimmgg = img
+
+    if mfi != None and mmfi!= None:
+        iimmgg = (mfi-mmfi)*np.transpose(img, (1, 2, 0))+mmfi
+
+    recovered_img = np.transpose(PCA.inverse(iimmgg), (2, 0, 1))
+
     print('Inverse PCA done with success !')
     
     return recovered_img
@@ -645,8 +645,15 @@ def load_and_process_test_image(PCA_th):
     PCA = inpystem.tools.PCA.PcaHandler(np.transpose(test_img, (1, 2, 0)), mask=mask, PCA_transform=True, PCA_th = PCA_th, verbose=False)
     pca_test_img = np.transpose(PCA.direct(), (2, 0, 1))
 
-    mfi = np.max(pca_test_img)
-    mmfi = np.min(pca_test_img)
+    mmm=[]
+    for i in range(test_img.shape[0]):
+        for j in range(test_img.shape[1]):
+            for k in range(test_img.shape[2]):
+                if mask[i,j,k]==1:
+                    mmm.append(test_image[i,j,k])
+                    
+    mfi = np.max(mmm)
+    mmfi = np.min(mmm)
     pca_test_img = 1/(mfi-mmfi)*(pca_test_img-mmfi)
     
-    return test_img, pca_test_img, mask, PCA
+    return test_img, pca_test_img, mask, PCA, mfi, mmfi ## mfi : max value, mmfi : min value

@@ -21,6 +21,29 @@ import time
 
 import scipy.io as sio
 
+def results(out_np, time_elapsed, PCA, is_test=True):
+    print('Seconds elapsed : %d ' % (time_elapsed))
+
+    restored = inverse_pca(out_np,PCA)
+
+    restored_summed = sum(restored)
+    restored_summed = scale_image(restored_summed)
+
+    np.save('Restored_PCs_{}_base.npy'.format(out_np.shape[0]), out_np)
+    np.save('Restored_original_base.npy', restored)
+    np.save('Restored_original_base_summed.npy', restored_summed)
+
+    if not is_test:
+        orig_summed = sum(dmread(path_list[0]))
+        orig_summed = scale_image(orig_summed)
+        print_metrics(torch.tensor(orig_summed).unsqueeze(0).unsqueeze(0).float(),torch.tensor(restored_summed).unsqueeze(0).unsqueeze(0).float())
+        return restored_summed , orig_summed
+
+    else:
+        return restored_summed
+
+###############################################################################
+
 def train(net, partial_pca_img, mask, optimizer_type='adamw', loss_name='master_metric', num_iter=3001, grad_clipping=True, LR=0.01, reg_noise_std = 0.01, show_every=100):
 
     dtype = torch.cuda.FloatTensor

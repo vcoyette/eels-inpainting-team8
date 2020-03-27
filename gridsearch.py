@@ -2,6 +2,7 @@ from itertools import product
 from inpainting_functions import *
 from utils.common_utils import *
 from models.skip import *
+from models.resnet import ResNet
 import csv
 import torch
 import time
@@ -12,23 +13,20 @@ dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTens
 
 params_resnet = {
         'loss_name': ['mse', 'master_metric'],
-        'pcat_th': [5, 10, 15],
+        'grad_clipping':[True, False],
         'num_blocks': [4, 8, 16, 32],
         'num_channels': [32, 64, 128],
-        'path': ['data/HR-sample/spim4-2_ali.dm4']
         }
 
 params_skip = {
         'loss_name': ['mse', 'master_metric'],
         'grad_clipping':[True, False],
-        'pca_th': [5,10,15],
         'num_channels_down': [[8,8,8],[16,16,16],[64,32,16]],
         'filter_size_':[3,5,7],
-        'path': ['data/HR-sample/spim4-2_ali.dm4'],
         'net_type':['skip6']
         }
 
-num_iter = 1
+num_iter = 2501
 
 def params_gen(params):
     if not params.items():
@@ -47,11 +45,10 @@ def get_final_metrics(out_np,orig_np):
 
     return ssim.item(), psnr.item(), sad.item()
 
-def test_params_skip(loss_name, grad_clipping, pca_th, num_channels_down, filter_size_, path, net_type):
+def test_params_skip(full_pca_img, partial_pca_img, mask, loss_name, grad_clipping, num_channels_down, filter_size_, net_type):
 
     start_time = time.time()
 
-    full_pca_img, partial_pca_img, mask, l1, l2, PCA1, PCA2 = load_and_process_fc(path,pca_th,0.2)
     img_var = np_to_torch(partial_pca_img).type(dtype)
     mask_var = np_to_torch(mask).type(dtype)
 
@@ -81,8 +78,6 @@ def test_params_skip(loss_name, grad_clipping, pca_th, num_channels_down, filter
     noise = net_input.detach().clone()
     net_input = net_input_saved
 
-
-    print('Starting optimization with ADAMW')
     optimizer = torch.optim.AdamW(net.parameters(), lr=LR)
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, verbose=False, patience=100, threshold=0.0005, threshold_mode='rel', cooldown=0, min_lr=5e-6)
 
@@ -119,11 +114,10 @@ def test_params_skip(loss_name, grad_clipping, pca_th, num_channels_down, filter
     p = get_params(OPT_OVER, net, net_input)
     optimize(OPTIMIZER, p, closure, LR, num_iter)
 
-def test_parameters_resnet(loss_name, grad_clipping, pca_th, num_blocks, num_channels, path):
+def test_params_resnet(full_pca_img, partial_pca_img, mask, loss_name, grad_clipping, num_blocks, num_channels):
 
-    start_time = time()
+    start_time = time.time()
 
-    full_pca_img, partial_pca_img, mask, l1, l2, PCA1, PCA2 = load_and_process_fc(path,pca_th,0.2)
     img_var = np_to_torch(partial_pca_img).type(dtype)
     mask_var = np_to_torch(mask).type(dtype)
 
@@ -141,7 +135,6 @@ def test_parameters_resnet(loss_name, grad_clipping, pca_th, num_blocks, num_cha
     noise = net_input.detach().clone()
     net_input = net_input_saved
 
-    print('Starting optimization with ADAMW')
     optimizer = torch.optim.AdamW(net.parameters(), lr=LR)
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, verbose=False, patience=100, threshold=0.0005, threshold_mode='rel', cooldown=0, min_lr=5e-6)
 
@@ -175,53 +168,63 @@ def test_parameters_resnet(loss_name, grad_clipping, pca_th, num_blocks, num_cha
     return get_final_metrics(out_np,full_pca_img), elapsed
 
 
+path = 'data/HR-sample/spim4-2_ali.dm4'
 
 # Hyperparam tuning skip
-num_skip_config = sum(1 for i in params_gen(params_skip))
+num_skip_config = 4 * sum(1 for i in params_gen(params_skip))
 print("Number of skip config to test: {}".format(num_skip_config))
 configs_skip = []
 
 count=0
-for param in params_gen(params_skip):
-    config_skip_items = param.copy()
-    (ssim, psnr, sad), duration = test_params_skip(**param)
-    config_skip_items['ssim'] = ssim
-    config_skip_items['psnr'] = psnr
-    config_skip_items['sad'] = sad
-    config_skip_items['duration'] = duration
+for pca_th in [3,5,8,11]:
+    full_pca_img, partial_pca_img, mask, l1, l2, PCA1, PCA2 = load_and_process_fc(path,pca_th,0.2)
+    for param in params_gen(params_skip):
+        config_skip_items = param.copy()
+        (ssim, psnr, sad), duration = test_params_skip(full_pca_img, partial_pca_img, mask, **param)
+        config_skip_items['ssim'] = ssim
+        config_skip_items['psnr'] = psnr
+        config_skip_items['sad'] = sad
+        config_skip_items['pca_th'] = pca_th
+        config_skip_items['duration'] = duration
 
-    configs_skip.append(config_skip_items)
-    count += 1
-    print("Skip: {}/{}".format(count, num_skip_config))
+        configs_skip.append(config_skip_items)
+        count += 1
+        print("Skip: {}/{}".format(count, num_skip_config))
 
-# Hyperparam tuning skip
-num_resnet_config = sum(1 for i in params_gen(params_resnet))
+# Hyperparam tuning resnet
+num_resnet_config = 4 * sum(1 for i in params_gen(params_resnet))
 print("Number of resnet config to test: {}".format(num_resnet_config))
-configs_resnet = {}
+configs_resnet = []
 count = 0
-for param in params_gen(params_resnet):
-    config_resnet_items = param.copy()
-    (ssim, psnr, sad), duration = test_params_resnet(**param)
-    config_skip_items['ssim'] = ssim
-    config_skip_items['psnr'] = psnr
-    config_skip_items['sad'] = sad
-    config_skip_items['duration'] = duration
-    configs_resnet.append(config_resnet_items)
-    count += 1
-    print("ResNet: {}/{}".format(count, num_skip_config))
+for pca_th in [3,5,8,11]:
+    full_pca_img, partial_pca_img, mask, l1, l2, PCA1, PCA2 = load_and_process_fc(path,pca_th,0.2)
+    for param in params_gen(params_resnet):
+        config_resnet_items = param.copy()
+        (ssim, psnr, sad), duration = test_params_resnet(full_pca_img, partial_pca_img, mask, **param)
+        config_resnet_items['ssim'] = ssim
+        config_resnet_items['psnr'] = psnr
+        config_resnet_items['sad'] = sad
+        config_resnet_items['pca_th'] = pca_th
+        config_resnet_items['duration'] = duration
+
+        configs_resnet.append(config_resnet_items)
+        count += 1
+        print("ResNet: {}/{}".format(count, num_resnet_config))
 
 
-def save_list_dict_csv(dict_list, path):
-    f = open(path, 'w')
+def save_list_dict_csv(dict_list, output):
+    f = open(output, 'w')
 
     with f:
         writer = csv.DictWriter(f, fieldnames=dict_list[0].keys())
+        writer.writeheader()
+
 
         for dic in dict_list:
             writer.writerow(dic)
 
-save_list_dict_csv('skip.csv', configs_skip)
-save_list_dict_csv('resnet.csv', configs_resnet)
+save_list_dict_csv(configs_skip, 'skip.csv')
+save_list_dict_csv(configs_resnet, 'resnet.csv')
 
 
 

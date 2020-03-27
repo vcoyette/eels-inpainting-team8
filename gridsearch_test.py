@@ -1,0 +1,250 @@
+from itertools import product
+from inpainting_functions import *
+from utils.common_utils import *
+from models.skip import *
+from models.resnet import ResNet
+import csv
+import torch
+import time
+
+torch.backends.cudnn.enabled = torch.cuda.is_available()
+torch.backends.cudnn.benchmark = torch.cuda.is_available()
+dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+
+params_resnet = {
+        'loss_name': ['mse', 'master_metric'],
+        'grad_clipping':[True, False],
+        'num_blocks': [4, 8, 16, 32],
+        'num_channels': [32, 64, 128],
+        }
+
+params_skip = {
+        'loss_name': ['mse', 'master_metric'],
+        'grad_clipping':[True, False],
+        'num_channels_down': [[8,8,8],[16,16,16],[64,32,16]],
+        'filter_size_':[3,5,7],
+        'net_type':['skip6']
+        }
+
+num_iter = 2501
+
+def params_gen(params):
+    if not params.items():
+        yield {}
+    else:
+        keys, values = zip(*params.items())
+        for v in product(*values):
+            p = dict(zip(keys, v))
+            yield p
+
+def get_final_metrics(out_np,orig_np):
+    filled_image, real_image = torch.tensor(out_np).unsqueeze(0).float(), torch.tensor(orig_np).unsqueeze(0).float()
+    psnr = master_metric(real_image, filled_image, 1, 0, 0, 'sum')
+    ssim = master_metric(real_image, filled_image, 0, 1, 0, 'sum')
+    sad = master_metric(real_image, filled_image, 0, 0, 1, 'sum')
+
+    return ssim.item(), psnr.item(), sad.item()
+
+def test_params_skip(test_image, pca_test_img, mask, loss_name, grad_clipping, num_channels_down, filter_size_, net_type):
+
+    start_time = time.time()
+
+    img_var = np_to_torch(pca_test_img).type(dtype)
+    mask_var = np_to_torch(mask).type(dtype)
+
+    LR = 0.01
+
+    INPUT = 'noise'
+    input_depth = pca_test_img.shape[0]
+    output_depth = pca_test_img.shape[0]
+
+    num_channels_up = num_channels_down.copy()
+    num_channels_up.reverse()
+
+    depth = int(net_type[-1])
+    net = skip(input_depth, output_depth,
+            num_channels_down = num_channels_down[:depth],
+            num_channels_up =   num_channels_up[:depth],
+            num_channels_skip =    [16, 16, 16][:depth],
+            filter_size_up = filter_size_,filter_size_down = filter_size_,  filter_skip_size=1,
+            upsample_mode='nearest', # downsample_mode='avg',
+            need1x1_up=False,
+            need_sigmoid=True, need_bias=True, pad='reflection', act_fun='LeakyReLU').type(dtype)
+
+
+    net = net.type(dtype)
+    net_input = get_noise(input_depth, INPUT, pca_test_img.shape[1:],var=1).type(dtype)
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+    net_input = net_input_saved
+
+    optimizer = torch.optim.AdamW(net.parameters(), lr=LR)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, verbose=False, patience=100, threshold=0.0005, threshold_mode='rel', cooldown=0, min_lr=5e-6)
+
+    for j in range(num_iter):
+
+        out = net(net_input)
+
+        optimizer.zero_grad()
+
+        if loss_name == 'mse':
+            mse = torch.nn.MSELoss().type(dtype)
+            total_loss = mse(out * mask_var, img_var * mask_var)
+        elif loss_name == 'master_metric':
+            total_loss = -master_metric((out * mask_var), (img_var * mask_var), 1, 1, 1, 'product')
+        else:
+            raise ValueError("Input a correct loss name (among 'mse' | 'master_metric'")
+
+        total_loss.backward()
+
+        if grad_clipping:
+            for param in net.parameters():
+                param.grad.data.clamp_(-1, 1)
+
+        optimizer.step()
+        scheduler.step(total_loss)
+
+    out_np = torch_to_np(out)
+
+    elapsed = time.time() - start_time
+
+    return get_final_metrics(out_np * mask,pca_test_img), elapsed
+
+
+
+def test_params_resnet(test_image, pca_test_img, mask, loss_name, grad_clipping, num_blocks, num_channels):
+
+    start_time = time.time()
+
+    img_var = np_to_torch(pca_test_img).type(dtype)
+    mask_var = np_to_torch(mask).type(dtype)
+
+    LR = 0.01
+
+    INPUT = 'noise'
+    input_depth = pca_test_img.shape[0]
+    output_depth = pca_test_img.shape[0]
+
+    net = ResNet(input_depth, output_depth, num_blocks, num_channels, act_fun='LeakyReLU')
+
+    net = net.type(dtype)
+    net_input = get_noise(input_depth, INPUT, pca_test_img.shape[1:],var=1).type(dtype)
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+    net_input = net_input_saved
+
+    optimizer = torch.optim.AdamW(net.parameters(), lr=LR)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, verbose=False, patience=100, threshold=0.0005, threshold_mode='rel', cooldown=0, min_lr=5e-6)
+
+    for j in range(num_iter):
+
+        out = net(net_input)
+
+        optimizer.zero_grad()
+
+        if loss_name == 'mse':
+            mse = torch.nn.MSELoss().type(dtype)
+            total_loss = mse(out * mask_var, img_var * mask_var)
+        elif loss_name == 'master_metric':
+            total_loss = -master_metric((out * mask_var), (img_var * mask_var), 1, 1, 1, 'product')
+        else:
+            raise ValueError("Input a correct loss name (among 'mse' | 'master_metric'")
+
+        total_loss.backward()
+
+        if grad_clipping:
+            for param in net.parameters():
+                param.grad.data.clamp_(-1, 1)
+
+        optimizer.step()
+        scheduler.step(total_loss)
+
+    out_np = torch_to_np(out)
+
+    elapsed = time.time() - start_time
+
+    return get_final_metrics(out_np * mask,pca_test_img), elapsed
+
+def load_and_process_test_image(PCA_th):
+
+    data = np.load('data/Test/dtest_1_data.npy')
+    mask = 1*np.load('data/Test/dtest_1_mask.npy')
+    path = np.load('data/Test/dtest_1_scan.npy')
+    m, p = data.shape
+    m, n = mask.shape
+    full_data = np.zeros((m*n, p))
+    full_data[path,:] = data
+    img = full_data.reshape(m, n, p)
+
+    test_img = mask*np.transpose(img, (2, 0, 1))
+
+    PCA = inpystem.tools.PCA.PcaHandler(np.transpose(test_img, (1, 2, 0)), mask=mask, PCA_transform=True, PCA_th = PCA_th, verbose=False)
+    pca_test_img = np.transpose(PCA.direct(), (2, 0, 1))
+
+    mfi = np.max(pca_test_img)
+    mmfi = np.min(pca_test_img)
+    pca_test_img = 1/(mfi-mmfi)*(pca_test_img-mmfi)
+
+    return test_img, pca_test_img, mask
+
+
+# Hyperparam tuning skip
+num_skip_config = 4 * sum(1 for i in params_gen(params_skip))
+print("Number of skip config to test: {}".format(num_skip_config))
+configs_skip = []
+
+count=0
+for pca_th in [3,5,8,11]:
+    test_img, pca_test_img, mask = load_and_process_test_image(pca_th)
+    print(pca_test_img.shape)
+    for param in params_gen(params_skip):
+        config_skip_items = param.copy()
+        (ssim, psnr, sad), duration = test_params_skip(test_img, pca_test_img, mask, **param)
+        config_skip_items['ssim'] = ssim
+        config_skip_items['psnr'] = psnr
+        config_skip_items['sad'] = sad
+        config_skip_items['pca_th'] = pca_th
+        config_skip_items['duration'] = duration
+
+        configs_skip.append(config_skip_items)
+        count += 1
+        print("Skip: {}/{}".format(count, num_skip_config))
+
+# Hyperparam tuning resnet
+num_resnet_config = 4 * sum(1 for i in params_gen(params_resnet))
+print("Number of resnet config to test: {}".format(num_resnet_config))
+configs_resnet = []
+count = 0
+for pca_th in [3,5,8,11]:
+    full_pca_img, partial_pca_img, mask = load_and_process_test_image(pca_th)
+    for param in params_gen(params_resnet):
+        config_resnet_items = param.copy()
+        (ssim, psnr, sad), duration = test_params_resnet(full_pca_img, partial_pca_img, mask, **param)
+        config_resnet_items['ssim'] = ssim
+        config_resnet_items['psnr'] = psnr
+        config_resnet_items['sad'] = sad
+        config_resnet_items['pca_th'] = pca_th
+        config_resnet_items['duration'] = duration
+
+        configs_resnet.append(config_resnet_items)
+        count += 1
+        print("ResNet: {}/{}".format(count, num_resnet_config))
+
+
+def save_list_dict_csv(dict_list, output):
+    f = open(output, 'w')
+
+    with f:
+        writer = csv.DictWriter(f, fieldnames=dict_list[0].keys())
+        writer.writeheader()
+
+
+        for dic in dict_list:
+            writer.writerow(dic)
+
+save_list_dict_csv(configs_skip, 'skip_test.csv')
+save_list_dict_csv(configs_resnet, 'resnet_test.csv')
+
+
+
+

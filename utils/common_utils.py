@@ -224,7 +224,7 @@ def optimize(optimizer_type, parameters, closure, LR, num_iter):
     elif optimizer_type == 'adam':
         print('Starting optimization with ADAM')
         optimizer = torch.optim.Adam(parameters, lr=LR)
-        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, verbose=True, patience=200, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=5e-6)
+        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, verbose=True, patience=100, threshold=0.0005, threshold_mode='rel', cooldown=0, min_lr=5e-6)
 
         for j in range(num_iter):
             optimizer.zero_grad()
@@ -235,7 +235,7 @@ def optimize(optimizer_type, parameters, closure, LR, num_iter):
     elif optimizer_type == 'adamw':
         print('Starting optimization with ADAMW')
         optimizer = torch.optim.AdamW(parameters, lr=LR)
-        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, verbose=True, patience=200, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=5e-6)
+        scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, verbose=True, patience=100, threshold=0.0005, threshold_mode='rel', cooldown=0, min_lr=5e-6)
 
         for j in range(num_iter):
             optimizer.zero_grad()
